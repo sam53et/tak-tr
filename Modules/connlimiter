@@ -1,0 +1,160 @@
+#!/bin/bash
+
+set -o pipefail
+
+INTERVAL="${SSHPLUS_LIMITER_INTERVAL:-10}"
+PIDFILE="/var/run/sshplus-connlimiter.pid"
+LOG_DIR="/var/log/sshplus"
+DAEMON_LOG="$LOG_DIR/connlimiter.log"
+
+if [[ -f /etc/SSHPlus/db ]]; then
+	source /etc/SSHPlus/db
+elif [[ -f /bin/db ]]; then
+	source /bin/db
+elif [[ -f "$(dirname "$0")/db" ]]; then
+	source "$(dirname "$0")/db"
+fi
+
+_mkdirs() {
+	mkdir -p "$LOG_DIR" 2>/dev/null || true
+}
+
+_log() {
+	printf '%s %s\n' "$(date +"%Y-%m-%d %H:%M:%S")" "$*" >>"$DAEMON_LOG" 2>/dev/null || true
+}
+
+_is_running() {
+	[[ -f "$PIDFILE" ]] || return 1
+	local pid
+	pid=$(tr -d ' \n' <"$PIDFILE" 2>/dev/null)
+	[[ -n "$pid" && -d "/proc/$pid" ]] || return 1
+	return 0
+}
+
+_list_tracked_users() {
+	local db home="${HOME:-/root}"
+	db="${home}/users.db"
+	if [[ -f "$db" ]]; then
+		awk 'NF && $1 !~ /^#/ { print $1 }' "$db" 2>/dev/null
+	fi
+	awk -F: '$3 >= 1000 && $1 != "nobody" { print $1 }' /etc/passwd 2>/dev/null
+}
+
+_user_conn_pids_sorted() {
+	local u="$1"
+	ps -u "$u" -o etimes=,pid=,comm= 2>/dev/null |
+		awk '$3=="sshd" || $3=="dropbear" {print $1" "$2}' |
+		sort -rn -k1,1 |
+		awk '{print $2}'
+}
+
+_get_user_limit() {
+	local u="$1"
+	if type sshplus_db_get_limit >/dev/null 2>&1; then
+		sshplus_db_get_limit "$u"
+		return
+	fi
+	printf '1'
+}
+
+_enforce_user() {
+	local u="$1" limit pids count excess pid i
+	limit="$(_get_user_limit "$u")"
+	[[ "$limit" =~ ^[0-9]+$ ]] || limit=1
+	[[ "$limit" -lt 1 ]] && limit=1
+
+	mapfile -t pids < <(_user_conn_pids_sorted "$u")
+	count=${#pids[@]}
+	[[ "$count" -le "$limit" ]] && return 0
+
+	excess=$(( count - limit ))
+	i=0
+	for pid in "${pids[@]}"; do
+		[[ $i -ge $excess ]] && break
+		if kill -9 "$pid" 2>/dev/null; then
+			_log "limit_kill user=$u pid=$pid limit=$limit active=$count"
+		fi
+		((i++)) || true
+	done
+}
+
+_tick() {
+	local u
+	local -A seen=()
+	while read -r u; do
+		[[ -z "$u" ]] && continue
+		[[ -n "${seen[$u]:-}" ]] && continue
+		seen["$u"]=1
+		_enforce_user "$u"
+	done < <(_list_tracked_users | sort -u)
+}
+
+_loop() {
+	_mkdirs
+	_log "connlimiter started interval=${INTERVAL}s pid=$$"
+	while true; do
+		_tick
+		sleep "$INTERVAL"
+	done
+}
+
+cmd_start() {
+	if _is_running; then
+		echo "connlimiter zaten çalışıyor (pid $(cat "$PIDFILE"))"
+		return 0
+	fi
+	_mkdirs
+	nohup bash "$0" run >>"$DAEMON_LOG" 2>&1 &
+	echo $! >"$PIDFILE"
+	sleep 0.3
+	if _is_running; then
+		echo "connlimiter başlatıldı (pid $(cat "$PIDFILE"), aralık ${INTERVAL}s)"
+		return 0
+	fi
+	echo "connlimiter başlatılamadı"
+	return 1
+}
+
+cmd_stop() {
+	if ! _is_running; then
+		rm -f "$PIDFILE" 2>/dev/null || true
+		echo "connlimiter çalışmıyor"
+		return 0
+	fi
+	local pid
+	pid=$(tr -d ' \n' <"$PIDFILE")
+	kill "$pid" 2>/dev/null || true
+	sleep 0.5
+	kill -9 "$pid" 2>/dev/null || true
+	rm -f "$PIDFILE" 2>/dev/null || true
+	echo "connlimiter durduruldu"
+}
+
+cmd_status() {
+	if _is_running; then
+		echo "çalışıyor pid=$(tr -d ' \n' <"$PIDFILE") interval=${INTERVAL}s"
+		return 0
+	fi
+	echo "kapalı"
+	return 1
+}
+
+cmd_restart() {
+	cmd_stop
+	cmd_start
+}
+
+case "${1:-}" in
+	start) cmd_start ;;
+	stop) cmd_stop ;;
+	status) cmd_status ;;
+	restart) cmd_restart ;;
+	run)
+		echo $$ >"$PIDFILE"
+		_loop
+		;;
+	*)
+		echo "Kullanım: connlimiter {start|stop|status|restart}"
+		exit 1
+		;;
+esac

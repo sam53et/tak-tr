@@ -1,0 +1,172 @@
+#!/bin/bash
+
+if [[ -f /etc/SSHPlus/colors ]]; then
+	source /etc/SSHPlus/colors
+elif [[ -f /bin/colors ]]; then
+	source /bin/colors
+elif [[ -f "$(dirname "$0")/colors" ]]; then
+	source "$(dirname "$0")/colors"
+fi
+
+[[ $(awk -F" " '{print $2}' /usr/lib/licence 2>/dev/null) == "@CRAZY_VPN" ]] || {
+	exit 0
+}
+
+_TAK_DIR=""
+if [[ -d /etc/SSHPlus/Tak ]]; then
+	_TAK_DIR="/etc/SSHPlus/Tak"
+elif [[ -d /bin/Tak ]]; then
+	_TAK_DIR="/bin/Tak"
+elif [[ -d "$(dirname "$0")/../Tak" ]]; then
+	_TAK_DIR="$(cd "$(dirname "$0")/../Tak" 2>/dev/null && pwd)"
+elif [[ -d "$(dirname "$0")/Tak" ]]; then
+	_TAK_DIR="$(cd "$(dirname "$0")/Tak" 2>/dev/null && pwd)"
+fi
+
+if [[ -z "$_TAK_DIR" ]]; then
+	echo "HATA: Tak/ klasörü bulunamadı!" >&2
+	exit 1
+fi
+
+if [[ -f "$_TAK_DIR/connections_common" ]]; then
+	source "$_TAK_DIR/connections_common"
+else
+	echo "HATA: connections_common bulunamadı! ($_TAK_DIR)" >&2
+	exit 1
+fi
+
+for _mod in squid dropbear stunnel socks openssh sslh udpgw kapat; do
+	if [[ -f "$_TAK_DIR/connections_${_mod}" ]]; then
+		source "$_TAK_DIR/connections_${_mod}"
+	fi
+done
+unset _mod _TAK_DIR
+
+_conn_pad() {
+	local text="$1" width="${2:-14}" len pad
+	len=$(printf '%s' "$text" | LC_ALL=C.UTF-8 wc -m 2>/dev/null)
+	[[ -z "$len" || "$len" -lt 1 ]] && len=${#text}
+	pad=$((width - len))
+	((pad < 1)) && pad=1
+	printf '%s%*s' "$text" "$pad" ""
+}
+
+fun_connections() {
+	while true; do
+		[[ ! -e '/home/sshplus' ]] && exit 0
+		clear
+		banner_info "                BAĞLANTI MODU                 "
+		echo ""
+		echo -e "\033[1;32mSERVİS: \033[1;33mOPENSSH \033[1;32mPORT: \033[1;37m$(grep 'Port' /etc/ssh/sshd_config 2>/dev/null | cut -d' ' -f2 | grep -v 'no' | xargs)" && sts6="\033[1;32m◉ AÇIK"
+
+		[[ "$(netstat -tlpn 2>/dev/null | grep 'sslh' | wc -l)" != '0' ]] && {
+			echo -e "\033[1;32mSERVİS: \033[1;33mSSLH: \033[1;32mPORT: \033[1;37m$(netstat -nplt 2>/dev/null | grep 'sslh' | awk {'print $4'} | cut -d: -f2 | xargs)"
+			sts7="\033[1;32m◉ AÇIK"
+		} || {
+			sts7="\033[1;31m○ KAPALI"
+		}
+
+		[[ "$(netstat -tlpn 2>/dev/null | grep 'python3' | wc -l)" != '0' ]] && {
+			echo -e "\033[1;32mSERVİS: \033[1;33mSOCKS PROXY \033[1;32mPORT: \033[1;37m$(netstat -nplt 2>/dev/null | grep 'python3' | awk {'print $4'} | cut -d: -f2 | xargs)"
+			sts4="\033[1;32m◉ AÇIK"
+		} || {
+			sts4="\033[1;31m○ KAPALI"
+		}
+		[[ -e "/etc/stunnel/stunnel.conf" ]] && {
+			echo -e "\033[1;32mSERVİS: \033[1;33mSSL TÜNEL \033[1;32mPORT: \033[1;37m$(netstat -nplt 2>/dev/null | grep 'stunnel' | awk {'print $4'} | cut -d: -f2 | xargs)"
+			sts3="\033[1;32m◉ AÇIK"
+		} || {
+			sts3="\033[1;31m○ KAPALI"
+		}
+		[[ "$(netstat -tlpn 2>/dev/null | grep 'dropbear' | wc -l)" != '0' ]] && {
+			echo -e "\033[1;32mSERVİS: \033[1;33mDROPBEAR \033[1;32mPORT: \033[1;37m$(netstat -nplt 2>/dev/null | grep 'dropbear' | awk '{print $4}' | sed 's/.*://' | sort -u | xargs)"
+			sts2="\033[1;32m◉ AÇIK"
+		} || {
+			sts2="\033[1;31m○ KAPALI"
+		}
+		[[ "$(netstat -tlpn 2>/dev/null | grep 'squid' | wc -l)" != '0' ]] && {
+			echo -e "\033[1;32mSERVİS: \033[1;33mSQUID PROXY\033[1;32mPORT: \033[1;37m$(netstat -nplt 2>/dev/null | grep 'squid' | awk '{print $4}' | sed 's/.*://' | xargs)"
+			sts1="\033[1;32m◉ AÇIK"
+		} || {
+			sts1="\033[1;31m○ KAPALI"
+		}
+		udpgw_active_ports=$(ls /etc/systemd/system/multi-user.target.wants 2>/dev/null | grep -E '^badvpn-udpgw@[0-9]+\.service$' | while read -r u; do systemctl is-active --quiet "$u" && echo "$u" | sed -E 's/^badvpn-udpgw@([0-9]+)\.service$/\1/'; done | sort -n | xargs)
+		if [[ -n "$udpgw_active_ports" ]]; then
+			echo -e "\033[1;32mSERVİS: \033[1;33mBADVPN UDPGW \033[1;32mPORTLAR: \033[1;37m$udpgw_active_ports"
+			sts8="\033[1;32m◉ AÇIK"
+		else
+			sts8="\033[1;31m○ KAPALI"
+		fi
+		blue_code=$(get_color_code "blue")
+		red_code=$(get_color_code "red")
+		cyan_code=$(get_color_code "cyan")
+		white_code=$(get_color_code "white")
+		yellow_code=$(get_color_code "yellow")
+		green_code=$(get_color_code "green")
+		reset_code=$(get_reset_code)
+		echo -e "${blue_code}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${reset_code}"
+		echo ""
+		echo -e "${red_code}[${cyan_code}01${red_code}] ${white_code}• ${yellow_code}$(_conn_pad "OPENSSH")${sts6}${reset_code}"
+		echo -e "${red_code}[${cyan_code}02${red_code}] ${white_code}• ${yellow_code}$(_conn_pad "SQUID PROXY")${sts1}${reset_code}"
+		echo -e "${red_code}[${cyan_code}03${red_code}] ${white_code}• ${yellow_code}$(_conn_pad "DROPBEAR")${sts2}${reset_code}"
+		echo -e "${red_code}[${cyan_code}04${red_code}] ${white_code}• ${yellow_code}$(_conn_pad "SOCKS PROXY")${sts4}${reset_code}"
+		echo -e "${red_code}[${cyan_code}05${red_code}] ${white_code}• ${yellow_code}$(_conn_pad "SSL TÜNEL")${sts3}${reset_code}"
+		echo -e "${red_code}[${cyan_code}06${red_code}] ${white_code}• ${yellow_code}$(_conn_pad "SSLH ÇOKLAMA")${sts7}${reset_code}"
+		echo -e "${red_code}[${cyan_code}07${red_code}] ${white_code}• ${yellow_code}$(_conn_pad "BADVPN UDPGW")${sts8}${reset_code}"
+		echo -e "${red_code}[${cyan_code}08${red_code}] ${white_code}• ${yellow_code}TÜM SERVİSLERİ KAPAT${reset_code}"
+		echo -e "${red_code}[${cyan_code} 0${red_code}] ${white_code}• ${yellow_code}GERİ ${green_code}<${yellow_code}<${red_code}<${reset_code}"
+		echo -e "${red_code}[${cyan_code}00${red_code}] ${white_code}• ${yellow_code}ÇIKIŞ ${green_code}<${yellow_code}<${red_code}<${reset_code}"
+		echo ""
+		echo -e "${blue_code}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${reset_code}"
+		echo ""
+		tput civis
+		color_echo_n "LÜTFEN SEÇENEKLERDEN BİRİNİ SEÇİN " "green"
+		color_echo_n "?" "yellow"
+		color_echo_n "?" "red"
+		color_echo_n " " "white"
+		read x
+		tput cnorm
+		clear
+		case $x in
+		1 | 01)
+			fun_openssh
+			;;
+		2 | 02)
+			fun_squid
+			;;
+		3 | 03)
+			fun_drop
+			;;
+		4 | 04)
+			fun_socks
+			;;
+		5 | 05)
+			inst_ssl
+			;;
+		6 | 06)
+			fun_sslh
+			;;
+		7 | 07)
+			fun_udpgw
+			;;
+		8 | 08)
+			fun_kapat
+			;;
+		0)
+			menu
+			;;
+		00)
+			echo -e "\033[1;31mÇıkılıyor...\033[0m"
+			sleep 2
+			clear
+			exit
+			;;
+		*)
+			msg_err "Geçersiz seçenek !"
+			sleep 2
+			;;
+		esac
+	done
+}
+
+fun_connections

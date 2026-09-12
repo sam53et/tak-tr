@@ -1,0 +1,334 @@
+#!/bin/bash
+
+set -o pipefail
+
+INTERVAL="${SSHPLUS_SESSION_INTERVAL:-15}"
+PIDFILE="/var/run/sshplus-sessionlogger.pid"
+STATE_DIR="/etc/SSHPlus/sessionlogger.state"
+LOG_DIR="/var/log/sshplus"
+DAEMON_LOG="$LOG_DIR/sessionlogger.log"
+
+if [[ -f /etc/SSHPlus/db ]]; then
+	source /etc/SSHPlus/db
+elif [[ -f /bin/db ]]; then
+	source /bin/db
+fi
+
+_mkdirs() {
+	mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null || true
+}
+
+_log() {
+	printf '%s %s\n' "$(date +"%Y-%m-%d %H:%M:%S")" "$*" >>"$DAEMON_LOG" 2>/dev/null || true
+}
+
+_is_running() {
+	[[ -f "$PIDFILE" ]] || return 1
+	local pid
+	pid=$(tr -d ' \n' <"$PIDFILE" 2>/dev/null)
+	[[ -n "$pid" && -d "/proc/$pid" ]] || return 1
+	return 0
+}
+
+_get_user_ssh_ip() {
+	local u="$1"
+	local ip="" cand="" pid
+	local -a candidates=()
+
+	if command -v ss >/dev/null 2>&1; then
+		while read -r pid; do
+			[[ -z "$pid" ]] && continue
+			while read -r cand; do
+				[[ -n "$cand" ]] && candidates+=("$cand")
+			done < <(ss -tnp 2>/dev/null | awk -v pid="$pid" '
+				$0 ~ ("pid=" pid) {
+					n = split($5, a, ":")
+					if (n < 2) next
+					addr = a[1]
+					for (i = 2; i < n; i++) addr = addr ":" a[i]
+					gsub(/^\[|\]$/, "", addr)
+					if (addr != "" && addr != "*") print addr
+				}
+			')
+		done < <(ps -u "$u" -o pid=,comm= 2>/dev/null | awk '$2=="sshd"||$2=="dropbear"{print $1}')
+	fi
+
+	if command -v who >/dev/null 2>&1; then
+		while read -r cand; do
+			[[ -n "$cand" ]] && candidates+=("$cand")
+		done < <(who 2>/dev/null | awk -v u="$u" '$1==u {
+			for (i=1;i<=NF;i++) {
+				if ($i ~ /^\(/) {
+					s=$i; gsub(/^\(|\)$/,"",s); print s
+				}
+			}
+		}')
+	fi
+
+	local auth_files=()
+	[[ -f /var/log/auth.log ]] && auth_files+=(/var/log/auth.log)
+	[[ -f /var/log/secure ]] && auth_files+=(/var/log/secure)
+	if [[ ${#auth_files[@]} -gt 0 ]]; then
+		cand=$(grep -hE "Accepted (password|publickey|keyboard-interactive).* for ${u} from " "${auth_files[@]}" 2>/dev/null | tail -1 | \
+			sed -nE "s/.* for ${u} from ([0-9a-fA-F.:]+) .*/\1/p")
+		[[ -n "$cand" ]] && candidates+=("$cand")
+	fi
+	if command -v journalctl >/dev/null 2>&1; then
+		cand=$(journalctl -u ssh -u sshd --no-pager -n 200 2>/dev/null | \
+			grep -E "Accepted (password|publickey|keyboard-interactive).* for ${u} from " | tail -1 | \
+			sed -nE "s/.* for ${u} from ([0-9a-fA-F.:]+) .*/\1/p")
+		[[ -n "$cand" ]] && candidates+=("$cand")
+	fi
+
+	if command -v last >/dev/null 2>&1; then
+		cand=$(last -i -n 5 "$u" 2>/dev/null | awk -v u="$u" '$1==u && $3 ~ /[0-9]/ { print $3; exit }')
+		[[ -n "$cand" ]] && candidates+=("$cand")
+	fi
+
+	local c
+	for c in "${candidates[@]}"; do
+		[[ -z "$c" ]] && continue
+		case "$c" in
+			127.*|::1|localhost|0.0.0.0|::) continue ;;
+		esac
+		ip="$c"
+		break
+	done
+	if [[ -z "$ip" ]]; then
+		for c in "${candidates[@]}"; do
+			[[ -n "$c" ]] && { ip="$c"; break; }
+		done
+	fi
+
+	printf '%s' "${ip:-unknown}"
+}
+
+_user_conn_count() {
+	local u="$1" n=0
+	n=$(ps -u "$u" -o comm= 2>/dev/null | grep -cE '^(sshd|dropbear)$' || true)
+	if [[ "${n:-0}" -eq 0 ]] && command -v who >/dev/null 2>&1; then
+		n=$(who 2>/dev/null | awk -v u="$u" '$1 == u { c++ } END { print c+0 }')
+	fi
+	printf '%s' "${n:-0}"
+}
+
+_user_bytes() {
+	local u="$1" pid r=0 w=0 sum_r=0 sum_w=0 line
+	while read -r pid; do
+		[[ -z "$pid" ]] && continue
+		[[ -r "/proc/$pid/io" ]] || continue
+		r=0; w=0
+		while read -r line; do
+			case "$line" in
+				rchar:*) r="${line#rchar:}" ;;
+				wchar:*) w="${line#wchar:}" ;;
+			esac
+		done <"/proc/$pid/io" 2>/dev/null
+		sum_r=$((sum_r + ${r:-0}))
+		sum_w=$((sum_w + ${w:-0}))
+	done < <(ps -u "$u" -o pid=,comm= 2>/dev/null | awk '$2=="sshd"||$2=="dropbear"{print $1}')
+	printf '%s %s' "${sum_w:-0}" "${sum_r:-0}"
+}
+
+_list_tracked_users() {
+	local db home="${HOME:-/root}"
+	db="${home}/users.db"
+	if [[ -f "$db" ]]; then
+		awk 'NF && $1 !~ /^#/ { print $1 }' "$db" 2>/dev/null
+	fi
+	awk -F: '$3 >= 1000 && $1 != "nobody" { print $1 }' /etc/passwd 2>/dev/null
+}
+
+_state_file() { printf '%s/%s' "$STATE_DIR" "$1"; }
+
+_session_start() {
+	local u="$1" sf ip up down
+	sf="$(_state_file "$u")"
+	ip="$(_get_user_ssh_ip "$u")"
+	read -r up down <<<"$(_user_bytes "$u")"
+	{
+		echo "start_ts=$(date +%s)"
+		echo "start_iso=$(date +"%Y-%m-%d %H:%M:%S")"
+		echo "ip=${ip:-unknown}"
+		echo "banner=ssh"
+		echo "bytes_up_start=${up:-0}"
+		echo "bytes_down_start=${down:-0}"
+	} >"$sf" 2>/dev/null || true
+}
+
+_session_update_ip() {
+	local u="$1" sf ip
+	sf="$(_state_file "$u")"
+	[[ -f "$sf" ]] || return 0
+	. "$sf" 2>/dev/null || true
+	if [[ -z "${ip:-}" || "$ip" == "unknown" || "$ip" == "127.0.0.1" || "$ip" == "::1" ]]; then
+		ip="$(_get_user_ssh_ip "$u")"
+		case "$ip" in
+			127.*|::1|unknown|"") ;;
+			*) sed -i "s/^ip=.*/ip=$ip/" "$sf" 2>/dev/null || true ;;
+		esac
+	fi
+}
+
+_session_end() {
+	local u="$1" sf
+	sf="$(_state_file "$u")"
+	[[ -f "$sf" ]] || return 0
+
+	. "$sf" 2>/dev/null || true
+
+	local better
+	better="$(_get_user_ssh_ip "$u")"
+	case "$better" in
+		127.*|::1|unknown|"") ;;
+		*) ip="$better" ;;
+	esac
+	if [[ -z "${ip:-}" || "$ip" == "unknown" || "$ip" == "127.0.0.1" || "$ip" == "::1" ]]; then
+		if [[ -f /var/log/auth.log ]]; then
+			better=$(grep -hE "Accepted .* for ${u} from " /var/log/auth.log 2>/dev/null | tail -1 | \
+				sed -nE "s/.* from ([0-9a-fA-F.:]+) .*/\1/p")
+			case "$better" in
+				127.*|::1|"") ;;
+				*) ip="$better" ;;
+			esac
+		fi
+	fi
+
+	local end_ts end_iso delta_sec delta_hms
+	local up_now down_now session_up session_down bytes_sess
+	end_ts=$(date +%s)
+	end_simple=$(date +"%Y-%m-%d %H:%M:%S")
+	end_iso=$(date -Iseconds 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S%z")
+	delta_sec=$(( end_ts - ${start_ts:-end_ts} ))
+	(( delta_sec < 0 )) && delta_sec=0
+	delta_hms=$(printf '%02d:%02d:%02d' $((delta_sec/3600)) $(((delta_sec%3600)/60)) $((delta_sec%60)))
+
+	read -r up_now down_now <<<"$(_user_bytes "$u")"
+	session_up=$(( ${up_now:-0} - ${bytes_up_start:-0} ))
+	session_down=$(( ${down_now:-0} - ${bytes_down_start:-0} ))
+	(( session_up < 0 )) && session_up=0
+	(( session_down < 0 )) && session_down=0
+	bytes_sess=$(( session_up + session_down ))
+
+	local sip="${ip:-unknown}"
+	local sban="${banner:-ssh}"
+	local start_simple="${start_iso:-$end_simple}"
+
+	local log="${HOME:-/root}/sessions.log"
+	if [[ -f /etc/SSHPlus/privacy.conf ]]; then
+		. /etc/SSHPlus/privacy.conf 2>/dev/null || true
+	fi
+	local log_ip="$sip" log_ban="$sban"
+	if [[ "${LOG_IP_BANNER:-1}" -ne 1 ]]; then
+		log_ip="hidden"
+		log_ban="hidden"
+	fi
+	printf '%s | %s | %s | %s | %s | %s\n' "$start_simple" "$end_simple" "$delta_hms" "$u" "$log_ip" "$bytes_sess" >>"$log" 2>/dev/null || true
+
+	if type sshplus_db_add_traffic >/dev/null 2>&1; then
+		if type sshplus_with_db_lock >/dev/null 2>&1; then
+			sshplus_with_db_lock sshplus_db_add_traffic "$u" "$session_up" "$session_down" 2>/dev/null || true
+			sshplus_with_db_lock sshplus_db_set_latest_connection "$u" "$end_iso" 2>/dev/null || true
+		else
+			sshplus_db_add_traffic "$u" "$session_up" "$session_down" 2>/dev/null || true
+			sshplus_db_set_latest_connection "$u" "$end_iso" 2>/dev/null || true
+		fi
+	fi
+
+	_log "session_end user=$u ip=$sip duration=$delta_hms bytes=$bytes_sess"
+	rm -f "$sf" 2>/dev/null || true
+}
+
+_tick() {
+	local u count
+	local -A seen=()
+	while read -r u; do
+		[[ -z "$u" ]] && continue
+		[[ -n "${seen[$u]:-}" ]] && continue
+		seen["$u"]=1
+		count="$(_user_conn_count "$u")"
+		if [[ "${count:-0}" -gt 0 ]]; then
+			if [[ ! -f "$(_state_file "$u")" ]]; then
+				_session_start "$u"
+				_log "session_start user=$u ip=$(_get_user_ssh_ip "$u")"
+			else
+				_session_update_ip "$u"
+			fi
+		else
+			if [[ -f "$(_state_file "$u")" ]]; then
+				_session_end "$u"
+			fi
+		fi
+	done < <(_list_tracked_users | sort -u)
+}
+
+_loop() {
+	_mkdirs
+	_log "sessionlogger started interval=${INTERVAL}s pid=$$"
+	while true; do
+		_tick
+		sleep "$INTERVAL"
+	done
+}
+
+cmd_start() {
+	if _is_running; then
+		echo "sessionlogger zaten çalışıyor (pid $(cat "$PIDFILE"))"
+		return 0
+	fi
+	_mkdirs
+	nohup bash "$0" run >>"$DAEMON_LOG" 2>&1 &
+	echo $! >"$PIDFILE"
+	sleep 0.3
+	if _is_running; then
+		echo "sessionlogger başlatıldı (pid $(cat "$PIDFILE"), aralık ${INTERVAL}s)"
+		return 0
+	fi
+	echo "sessionlogger başlatılamadı"
+	return 1
+}
+
+cmd_stop() {
+	if ! _is_running; then
+		rm -f "$PIDFILE" 2>/dev/null || true
+		echo "sessionlogger çalışmıyor"
+		return 0
+	fi
+	local pid
+	pid=$(tr -d ' \n' <"$PIDFILE")
+	kill "$pid" 2>/dev/null || true
+	sleep 0.5
+	kill -9 "$pid" 2>/dev/null || true
+	rm -f "$PIDFILE" 2>/dev/null || true
+	echo "sessionlogger durduruldu"
+}
+
+cmd_status() {
+	if _is_running; then
+		echo "çalışıyor pid=$(tr -d ' \n' <"$PIDFILE") interval=${INTERVAL}s"
+		echo "aktif oturum state: $(ls "$STATE_DIR" 2>/dev/null | wc -l)"
+		return 0
+	fi
+	echo "kapalı"
+	return 1
+}
+
+cmd_restart() {
+	cmd_stop
+	cmd_start
+}
+
+case "${1:-}" in
+	start) cmd_start ;;
+	stop) cmd_stop ;;
+	status) cmd_status ;;
+	restart) cmd_restart ;;
+	run)
+		echo $$ >"$PIDFILE"
+		_loop
+		;;
+	*)
+		echo "Kullanım: sessionlogger {start|stop|status|restart}"
+		exit 1
+		;;
+esac

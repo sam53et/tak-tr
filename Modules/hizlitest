@@ -1,0 +1,87 @@
+#!/bin/bash
+
+if [[ -f "/etc/SSHPlus/colors" ]]; then
+	source /etc/SSHPlus/colors
+elif [[ -f "/bin/colors" ]]; then
+	source /bin/colors
+elif [[ -f "$(dirname "$0")/colors" ]]; then
+	source "$(dirname "$0")/colors"
+fi
+
+_ookla_bin() {
+	local p
+	for p in /usr/bin/speedtest /usr/local/bin/speedtest /usr/local/bin/ookla-speedtest; do
+		[[ -x "$p" ]] || continue
+		head -c 2 "$p" 2>/dev/null | grep -q '#!' && continue
+		printf '%s' "$p"
+		return 0
+	done
+	return 1
+}
+
+_install_ookla() {
+	if command -v apt-get >/dev/null 2>&1; then
+		export DEBIAN_FRONTEND=noninteractive
+		apt-get update -y >/dev/null 2>&1 || true
+		curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh 2>/dev/null | bash >/dev/null 2>&1
+		apt-get install -y speedtest >/dev/null 2>&1
+	elif command -v dnf >/dev/null 2>&1; then
+		curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.rpm.sh 2>/dev/null | bash >/dev/null 2>&1
+		dnf install -y speedtest >/dev/null 2>&1
+	elif command -v yum >/dev/null 2>&1; then
+		curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.rpm.sh 2>/dev/null | bash >/dev/null 2>&1
+		yum install -y speedtest >/dev/null 2>&1
+	fi
+	_ookla_bin >/dev/null
+}
+
+clear
+if type banner_info >/dev/null 2>&1; then
+	banner_info "            HIZ TESTİ (Ookla)            "
+else
+	color_echo "   SUNUCU HIZI TEST EDİLİYOR !" "green"
+fi
+echo ""
+
+bin="$(_ookla_bin || true)"
+
+if [[ -z "$bin" ]]; then
+	if [[ "$(id -u)" -ne 0 ]]; then
+		msg_err "Ookla speedtest kurulu değil. Root ile çalıştırın."
+		color_echo "  curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash" "yellow"
+		color_echo "  apt install -y speedtest" "yellow"
+		echo ""
+		color_echo_n "Devam etmek için ENTER..." "yellow"
+		read -r
+		exit 0
+	fi
+	color_echo "Ookla Speedtest kurulu değil, kuruluyor (3x-ui ile aynı yöntem)..." "yellow"
+	echo ""
+	if _install_ookla; then
+		bin="$(_ookla_bin || true)"
+	fi
+	if [[ -n "$bin" ]]; then
+		msg_ok "Kurulum tamam."
+	else
+		msg_err "Kurulum başarısız."
+		color_echo "  curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash" "yellow"
+		color_echo "  apt install -y speedtest" "yellow"
+		echo ""
+		color_echo_n "Devam etmek için ENTER..." "yellow"
+		read -r
+		exit 0
+	fi
+fi
+
+if [[ -z "$bin" ]]; then
+	msg_err "speedtest binary bulunamadı."
+	echo ""
+	color_echo_n "Devam etmek için ENTER..." "yellow"
+	read -r
+	exit 0
+fi
+
+"$bin" --accept-license --accept-gdpr "$@"
+echo ""
+color_echo_n "Devam etmek için ENTER'a basın..." "yellow"
+read -r
