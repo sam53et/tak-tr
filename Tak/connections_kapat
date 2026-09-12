@@ -1,0 +1,150 @@
+#!/bin/bash
+
+fun_kapat() {
+	clear
+	banner_danger "           TÜM SERVİSLERİ KAPAT            "
+	echo ""
+
+	[[ "$(netstat -nplt 2>/dev/null | grep -c 'squid')" != '0' ]] && kapat_sqd=1 || kapat_sqd=0
+	[[ "$(netstat -nltp 2>/dev/null | grep -c 'dropbear')" != '0' ]] && kapat_drp=1 || kapat_drp=0
+	[[ "$(netstat -nltp 2>/dev/null | grep -c 'stunnel4')" != '0' ]] && kapat_ssl=1 || kapat_ssl=0
+	[[ "$(netstat -nplt 2>/dev/null | grep -c 'python3')" != '0' ]] && kapat_sks=1 || kapat_sks=0
+	[[ "$(netstat -tlpn 2>/dev/null | grep -c 'sslh')" != '0' ]] && kapat_sslh=1 || kapat_sslh=0
+
+	_kapat_udpgw_wants="/etc/systemd/system/multi-user.target.wants"
+	_kapat_udpgw_ports="$(ls "$_kapat_udpgw_wants" 2>/dev/null | grep -E '^badvpn-udpgw@[0-9]+\.service$')"
+	[[ -n "$_kapat_udpgw_ports" ]] && kapat_udp=1 || kapat_udp=0
+
+	green_code=$(get_color_code "green")
+	red_code=$(get_color_code "red")
+	reset_code=$(get_reset_code)
+
+	kapat_sts() { [[ "$1" = '1' ]] && printf "%b◉ AÇIK%b" "$green_code" "$reset_code" || printf "%b○ KAPALI%b" "$red_code" "$reset_code"; }
+
+	echo -e "\033[1;33mSQUID PROXY  : $(kapat_sts "$kapat_sqd")"
+	echo -e "\033[1;33mDROPBEAR     : $(kapat_sts "$kapat_drp")"
+	echo -e "\033[1;33mSSL TÜNEL    : $(kapat_sts "$kapat_ssl")"
+	echo -e "\033[1;33mSOCKS PROXY  : $(kapat_sts "$kapat_sks")"
+	echo -e "\033[1;33mSSLH ÇOKLAMA : $(kapat_sts "$kapat_sslh")"
+	echo -e "\033[1;33mBADVPN UDPGW : $(kapat_sts "$kapat_udp")"
+	echo ""
+
+	if [[ "${kapat_sqd}${kapat_drp}${kapat_ssl}${kapat_sks}${kapat_sslh}${kapat_udp}" = "000000" ]]; then
+		msg_ok "ZATEN AKTİF SERVİS YOK!"
+		sleep 2
+		clear
+		fun_connections
+	fi
+
+	menu_option "1" "AKTİF SERVİSLERİN TAMAMINI KAPAT" "red" "yellow"
+	menu_option "0" "GERİ" "red" "yellow"
+	echo ""
+	color_echo_n "LÜTFEN SEÇENEKLERDEN BİRİNİ SEÇİN " "green"
+	color_echo_n "?" "yellow"
+	color_echo_n " " "white"
+	read resposta
+	clear
+
+	if [[ "$resposta" = '1' || "$resposta" = '01' ]]; then
+		color_echo_n "AKTİF SERVİSLERİN TAMAMINI KAPATMAK İSTEDİĞİNİZE EMİN MİSİNİZ " "green"
+		color_echo_n "? " "red"
+		color_echo_n "[e/h]: " "yellow"
+		read resp
+		if [[ "$resp" =~ ^[eEyY]$ ]]; then
+			echo ""
+			color_echo "SEÇİLEN SERVİSLER KAPATILIYOR!" "green"
+			echo ""
+
+			fun_kapat_all() {
+				if [[ "$kapat_sqd" = '1' ]]; then
+					[[ -d "/etc/squid" ]] && {
+						apt-get remove squid -y >/dev/null 2>&1
+						apt-get purge squid -y >/dev/null 2>&1
+						rm -rf /etc/squid >/dev/null 2>&1
+					}
+					[[ -d "/etc/squid3" ]] && {
+						apt-get remove squid3 -y >/dev/null 2>&1
+						apt-get purge squid3 -y >/dev/null 2>&1
+						rm -rf /etc/squid3 >/dev/null 2>&1
+					}
+					rm -rf /var/log/squid /var/spool/squid /var/spool/squid3 >/dev/null 2>&1
+				fi
+
+				if [[ "$kapat_drp" = '1' ]]; then
+					service dropbear stop >/dev/null 2>&1
+					/etc/init.d/dropbear stop >/dev/null 2>&1
+					apt-get autoremove dropbear -y >/dev/null 2>&1
+					apt-get remove dropbear-run -y >/dev/null 2>&1
+					apt-get remove dropbear -y >/dev/null 2>&1
+					apt-get purge dropbear -y >/dev/null 2>&1
+					rm -rf /etc/default/dropbear >/dev/null 2>&1
+				fi
+
+				if [[ "$kapat_ssl" = '1' ]]; then
+					service stunnel4 stop >/dev/null 2>&1
+					systemctl disable stunnel4 >/dev/null 2>&1
+					pkill -9 -f stunnel4 >/dev/null 2>&1
+					apt-get remove stunnel4 -y >/dev/null 2>&1
+					apt-get autoremove stunnel4 -y >/dev/null 2>&1
+					apt-get purge stunnel4 -y >/dev/null 2>&1
+					rm -rf /etc/stunnel /etc/default/stunnel4 /var/log/stunnel4 >/dev/null 2>&1
+					rm -f /etc/init.d/stunnel4 >/dev/null 2>&1
+					systemctl daemon-reload >/dev/null 2>&1
+					systemctl reset-failed stunnel4 >/dev/null 2>&1
+				fi
+
+				if [[ "$kapat_sks" = '1' ]]; then
+					for pidproxy in $(screen -ls 2>/dev/null | grep '\.proxy' | awk '{print $1}'); do
+						screen -r -S "$pidproxy" -X quit >/dev/null 2>&1
+					done
+					[[ -f /etc/autostart ]] && sed -i '/proxy.py/d' /etc/autostart
+					screen -wipe >/dev/null 2>&1
+				fi
+
+				if [[ "$kapat_sslh" = '1' ]]; then
+					/etc/init.d/sslh stop >/dev/null 2>&1
+					service sslh stop >/dev/null 2>&1
+					apt-get remove sslh -y >/dev/null 2>&1
+					apt-get purge sslh -y >/dev/null 2>&1
+					rm -rf /etc/systemd/system/sslh.service.d >/dev/null 2>&1
+					systemctl daemon-reload >/dev/null 2>&1
+				fi
+
+				if [[ "$kapat_udp" = '1' ]]; then
+					local _svc_prefix="badvpn-udpgw"
+					local _unit_tpl="/etc/systemd/system/${_svc_prefix}@.service"
+					local _bin="/usr/local/bin/badvpn-udpgw"
+					local _src="/usr/local/src/badvpn"
+					local _p
+					for _p in $(ls "$_kapat_udpgw_wants" 2>/dev/null | grep -E "^${_svc_prefix}@[0-9]+\.service$" | sed -E "s/^${_svc_prefix}@([0-9]+)\.service$/\1/"); do
+						systemctl disable --now "${_svc_prefix}@${_p}.service" >/dev/null 2>&1
+						systemctl reset-failed "${_svc_prefix}@${_p}.service" >/dev/null 2>&1
+					done
+					rm -f "$_unit_tpl" >/dev/null 2>&1
+					rm -f "$_bin" >/dev/null 2>&1
+					rm -rf "$_src" >/dev/null 2>&1
+					systemctl daemon-reload >/dev/null 2>&1
+				fi
+
+				apt-get autoremove -y >/dev/null 2>&1
+			}
+			fun_bar 'fun_kapat_all'
+			echo ""
+			msg_ok "SEÇİLEN TÜM SERVİSLER BAŞARIYLA KAPATILDI!"
+			sleep 3
+			clear
+			fun_connections
+		else
+			echo -e "\033[1;31mGeri dönülüyor...\033[0m"
+			sleep 2
+			clear
+			fun_connections
+		fi
+	elif [[ "$resposta" = '0' || "$resposta" = '00' ]]; then
+		fun_connections
+	else
+		msg_err "Geçersiz seçenek !"
+		sleep 2
+		fun_kapat
+	fi
+}

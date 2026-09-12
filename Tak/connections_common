@@ -1,0 +1,57 @@
+#!/bin/bash
+
+ram1=$(free -h | grep -i mem | awk {'print $2'})
+ram2=$(free -h | grep -i mem | awk {'print $4'})
+ram3=$(free -h | grep -i mem | awk {'print $3'})
+uso=$(top -bn1 | awk '/Cpu/ { cpu = "" 100 - $8 "%" }; END { print cpu }')
+system=$(cat /etc/issue.net 2>/dev/null || echo "Linux")
+
+fun_bar() {
+	command[0]="$1"
+	command[1]="$2"
+	(
+		[[ -e $HOME/fim ]] && rm $HOME/fim
+		[[ ! -d /etc/SSHPlus ]] && rm -rf /bin/menu
+		${command[0]} >/dev/null 2>&1
+		${command[1]} >/dev/null 2>&1
+		touch $HOME/fim
+	) >/dev/null 2>&1 &
+	tput civis
+	yellow_code=$(get_color_code "yellow")
+	red_code=$(get_color_code "red")
+	white_code=$(get_color_code "white")
+	green_code=$(get_color_code "green")
+	reset_code=$(get_reset_code)
+	echo -ne "${yellow_code}BEKLEYİN ${white_code}- ${yellow_code}["
+	while true; do
+		for ((i = 0; i < 18; i++)); do
+			echo -ne "${red_code}#"
+			sleep 0.1s
+		done
+		[[ -e $HOME/fim ]] && rm $HOME/fim && break
+		echo -e "${yellow_code}]"
+		sleep 1s
+		tput cuu1
+		tput dl1
+		echo -ne "${yellow_code}BEKLEYİN ${white_code}- ${yellow_code}["
+	done
+	echo -e "${yellow_code}]${white_code} -${green_code} TAMAM !${white_code}${reset_code}"
+	tput cnorm
+}
+
+verif_ptrs() {
+	porta=$1
+	PT=$(lsof -V -i tcp -P -n 2>/dev/null | grep -v "ESTABLISHED" | grep -v "COMMAND" | grep "LISTEN")
+	for pton in $(echo -e "$PT" | cut -d: -f2 | cut -d' ' -f1 | uniq); do
+		svcs=$(echo -e "$PT" | grep -w "$pton" | awk '{print $1}' | uniq)
+		[[ "$porta" = "$pton" ]] && {
+			echo ""
+			color_echo_n "PORT " "red"
+			color_echo_n "$porta " "yellow"
+			color_echo_n "ŞUNUN TARAFINDAN KULLANILIYOR: " "red"
+			color_echo "$svcs" "white"
+			sleep 3
+			fun_connections
+		}
+	done
+}

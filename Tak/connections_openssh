@@ -1,0 +1,17 @@
+#!/bin/bash
+
+fun_openssh() {
+	if [[ -f "/bin/multiport" ]]; then
+		/bin/multiport
+	elif [[ -f "/etc/SSHPlus/multiport" ]]; then
+		/etc/SSHPlus/multiport
+	elif [[ -f "$(dirname "$0")/multiport" ]]; then
+		"$(dirname "$0")/multiport"
+	else
+		clear
+		msg_err "Çoklu port modülü bulunamadı!"
+		sleep 2
+	fi
+	fun_connections
+}
+

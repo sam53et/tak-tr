@@ -1,0 +1,277 @@
+#!/bin/bash
+
+fun_udpgw() {
+	local svc_prefix="badvpn-udpgw"
+	local unit_tpl="/etc/systemd/system/${svc_prefix}@.service"
+	local bin="/usr/local/bin/badvpn-udpgw"
+	local src="/usr/local/src/badvpn"
+	local wants_dir="/etc/systemd/system/multi-user.target.wants"
+
+	udpgw_list_ports() {
+		ls "$wants_dir" 2>/dev/null | grep -E "^${svc_prefix}@[0-9]+\.service$" | sed -E "s/^${svc_prefix}@([0-9]+)\.service$/\1/" | sort -n
+	}
+
+	if [[ -f "$unit_tpl" ]] && [[ -x "$bin" ]]; then
+		clear
+		local ports
+		ports=$(udpgw_list_ports)
+		banner_info "         BADVPN UDPGW YÖNETİMİ (ÇOKLU PORT)         "
+		echo ""
+		if [[ -z "$ports" ]]; then
+			echo -e "\033[1;31mYAPILANDIRILMIŞ PORT YOK\033[0m"
+		else
+			echo -e "\033[1;33mYAPILANDIRILMIŞ PORTLAR:\033[0m"
+			for p in $ports; do
+				if systemctl is-active --quiet "${svc_prefix}@${p}.service" 2>/dev/null; then
+					echo -e "  \033[1;32m◉ \033[1;37m$p"
+				else
+					echo -e "  \033[1;31m○ \033[1;37m$p \033[1;31m(ÇALIŞMIYOR)\033[0m"
+				fi
+			done
+		fi
+		echo ""
+		menu_option "1" "PORT EKLE" "red" "yellow"
+		menu_option "2" "PORTU KALDIR" "red" "yellow"
+		menu_option "3" "BADVPN UDPGW'Yİ KALDIR (TÜMÜ)" "red" "yellow"
+		menu_option "0" "GERİ" "red" "yellow"
+		echo ""
+		color_echo_n "LÜTFEN SEÇENEKLERDEN BİRİNİ SEÇİN " "green"
+		color_echo_n "?" "yellow"
+		color_echo_n " " "white"
+		read resposta
+		if [[ "$resposta" = '1' ]]; then
+			echo ""
+			color_echo_n "HANGİ PORTU EKLEMEK İSTİYORSUNUZ " "green"
+			color_echo_n "?" "yellow"
+			color_echo_n " " "white"
+			read porta
+			[[ -z "$porta" ]] && {
+				echo ""
+				msg_err "Geçersiz port!"
+				sleep 2
+				clear
+				fun_udpgw
+			}
+			[[ ! "$porta" =~ ^[0-9]+$ ]] && {
+				echo ""
+				msg_err "Geçersiz port!"
+				sleep 2
+				clear
+				fun_udpgw
+			}
+			if [[ -f "${wants_dir}/${svc_prefix}@${porta}.service" ]]; then
+				echo ""
+				msg_err "PORT $porta ZATEN BADVPN UDPGW İÇİN YAPILANDIRILMIŞ!"
+				sleep 3
+				clear
+				fun_udpgw
+			fi
+			[[ "$(ss -lunp 2>/dev/null | grep -w ":${porta}" | wc -l)" != '0' ]] && {
+				echo ""
+				msg_err "PORT ZATEN KULLANIMDA (UDP)!"
+				sleep 3
+				clear
+				fun_udpgw
+			}
+			fun_udpgwadd() {
+				systemctl enable --now "${svc_prefix}@${porta}.service"
+			}
+			echo ""
+			color_echo "BADVPN UDPGW $porta PORTUNA EKLENİYOR" "green"
+			echo ""
+			fun_bar 'fun_udpgwadd'
+			echo ""
+			if systemctl is-active --quiet "${svc_prefix}@${porta}.service" 2>/dev/null; then
+				msg_ok "PORT $porta BAŞARIYLA EKLENDİ!"
+			else
+				msg_err "BEKLENMEYEN HATA! SERVİS BAŞLAMADI."
+			fi
+			sleep 2
+			clear
+			fun_udpgw
+		elif [[ "$resposta" = '2' ]]; then
+			local ports2
+			ports2=$(udpgw_list_ports)
+			if [[ -z "$ports2" ]]; then
+				echo ""
+				msg_err "YAPILANDIRILMIŞ PORT YOK!"
+				sleep 2
+				clear
+				fun_udpgw
+			fi
+			echo ""
+			color_echo_n "HANGİ PORTU KALDIRMAK İSTİYORSUNUZ " "green"
+			color_echo_n "?" "yellow"
+			color_echo_n " " "white"
+			read porta
+			[[ -z "$porta" ]] || [[ ! -f "${wants_dir}/${svc_prefix}@${porta}.service" ]] && {
+				echo ""
+				msg_err "PORT YAPILANDIRILMAMIŞ!"
+				sleep 2
+				clear
+				fun_udpgw
+			}
+			fun_udpgwdelport() {
+				systemctl disable --now "${svc_prefix}@${porta}.service" 2>/dev/null
+				systemctl reset-failed "${svc_prefix}@${porta}.service" 2>/dev/null
+			}
+			echo ""
+			color_echo "PORT $porta BADVPN UDPGW'DEN KALDIRILIYOR!" "green"
+			echo ""
+			fun_bar 'fun_udpgwdelport'
+			echo ""
+			msg_ok "PORT $porta BAŞARIYLA KALDIRILDI!"
+			sleep 2
+			clear
+			fun_udpgw
+		elif [[ "$resposta" = '3' ]]; then
+			echo ""
+			color_echo_n "BADVPN UDPGW'Yİ (TÜM PORTLAR) GERÇEKTEN KALDIRMAK İSTİYOR MUSUNUZ " "green"
+			color_echo_n "? " "red"
+			color_echo_n "[e/h]: " "yellow"
+			read resp
+			[[ "$resp" =~ ^[eEyY]$ ]] && {
+				fun_udpgwrm() {
+					local p
+					for p in $(udpgw_list_ports); do
+						systemctl disable --now "${svc_prefix}@${p}.service" 2>/dev/null
+						systemctl reset-failed "${svc_prefix}@${p}.service" 2>/dev/null
+					done
+					rm -f "$unit_tpl"
+					rm -f "$bin"
+					rm -rf "$src"
+					systemctl daemon-reload
+				}
+				echo ""
+				color_echo "BADVPN UDPGW KALDIRILIYOR!" "green"
+				echo ""
+				fun_bar 'fun_udpgwrm'
+				echo ""
+				msg_ok "BADVPN UDPGW BAŞARIYLA KALDIRILDI!"
+				sleep 2
+				clear
+				fun_connections
+			} || {
+				echo ""
+				msg_err "Geri dönülüyor..."
+				sleep 2
+				clear
+				fun_udpgw
+			}
+		elif [[ "$resposta" = '0' ]]; then
+			echo ""
+			msg_err "Geri dönülüyor..."
+			sleep 1
+			clear
+			fun_connections
+		else
+			echo ""
+			msg_err "Geçersiz seçenek !"
+			sleep 2
+			clear
+			fun_udpgw
+		fi
+	else
+		clear
+		banner_info "           BADVPN UDPGW KURULUMU            "
+		echo ""
+		msg_warn "[!] BU, TÜNEL ÜZERİNDEN UDP DESTEĞİNİ (OYUNLAR, SESLİ/GÖRÜNTÜLÜ ARAMALAR) ETKİNLEŞTİRİR"
+		msg_warn "[!] DAHA SONRA YÖNETİM MENÜSÜNDEN DAHA FAZLA PORT EKLEYEBİLİRSİNİZ"
+		echo ""
+		local _os_ok=0
+		if [[ -f /etc/os-release ]]; then
+			. /etc/os-release
+			case "${ID}-${VERSION_ID}" in
+				ubuntu-22.04 | ubuntu-24.04 | debian-12 | debian-13) _os_ok=1 ;;
+			esac
+		fi
+		[[ "$_os_ok" != "1" ]] && msg_warn "[!] TEST EDİLMEMİŞ İŞLETİM SİSTEMİ - DESTEKLENENLER: UBUNTU 22/24, DEBIAN 12/13. YİNE DE DEVAM EDİLİYOR."
+		echo ""
+		color_echo_n "DEVAM ETMEK İSTİYOR MUSUNUZ " "green"
+		color_echo_n "? " "red"
+		color_echo_n "[e/h]: " "yellow"
+		read resp
+		[[ "$resp" =~ ^[eEyY]$ ]] && {
+			echo ""
+			read -p "$(echo -e "\033[1;32mHANGİ PORTU KULLANMAK İSTİYORSUNUZ? \033[1;37m")" -e -i 7300 porta
+			[[ -z "$porta" ]] && {
+				echo ""
+				msg_err "Geçersiz port!"
+				sleep 2
+				clear
+				fun_connections
+			}
+			[[ "$(ss -lunp 2>/dev/null | grep -w ":${porta}" | wc -l)" != '0' ]] && {
+				echo ""
+				msg_err "PORT ZATEN KULLANIMDA (UDP)!"
+				sleep 3
+				clear
+				fun_connections
+			}
+			echo ""
+			color_echo "DERLEME BAĞIMLILIKLARI KURULUYOR" "green"
+			echo ""
+			fun_udpgwdeps() {
+				apt-get update -y
+				apt-get install -y git cmake build-essential
+			}
+			fun_bar 'fun_udpgwdeps'
+			echo ""
+			color_echo "BADVPN UDPGW İNDİRİLİYOR VE DERLENİYOR" "green"
+			echo ""
+			fun_udpgwbuild() {
+				rm -rf "$src"
+				git clone --depth 1 https://github.com/ambrop72/badvpn.git "$src"
+				mkdir -p "$src/build"
+				( cd "$src/build" && cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 >/dev/null 2>&1 && make -j"$(nproc)" >/dev/null 2>&1 )
+				install -m 755 "$src/build/udpgw/badvpn-udpgw" "$bin" 2>/dev/null
+			}
+			fun_bar 'fun_udpgwbuild'
+			if [[ ! -x "$bin" ]]; then
+				echo ""
+				msg_err "DERLEME BAŞARISIZ! BAĞLANTIYI/BAĞIMLILIKLARI KONTROL EDİN."
+				sleep 3
+				clear
+				fun_connections
+			fi
+			echo ""
+			color_echo "BADVPN UDPGW SERVİSİ YAPILANDIRILIYOR (ŞABLON, ÇOKLU PORT)" "green"
+			echo ""
+			fun_udpgwsvc() {
+				cat <<-EOF >"$unit_tpl"
+					[Unit]
+					Description=BadVPN UDP Gateway (badvpn-udpgw) - port %i
+					After=network.target
+
+					[Service]
+					ExecStart=${bin} --listen-addr 127.0.0.1:%i --max-clients 1000
+					Restart=always
+					RestartSec=3
+					User=nobody
+
+					[Install]
+					WantedBy=multi-user.target
+				EOF
+				systemctl daemon-reload
+				systemctl enable --now "${svc_prefix}@${porta}.service"
+			}
+			fun_bar 'fun_udpgwsvc'
+			echo ""
+			if systemctl is-active --quiet "${svc_prefix}@${porta}.service" 2>/dev/null; then
+				msg_ok "BADVPN UDPGW BAŞARIYLA KURULDU! PORT: $porta"
+			else
+				msg_err "BEKLENMEYEN HATA! SERVİS BAŞLAMADI."
+			fi
+			sleep 3
+			clear
+			fun_connections
+		} || {
+			echo ""
+			msg_err "Geri dönülüyor..."
+			sleep 2
+			clear
+			fun_connections
+		}
+	fi
+}
+

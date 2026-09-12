@@ -1,0 +1,75 @@
+#!/bin/bash
+
+fun_sslh() {
+	[[ "$(netstat -nltp | grep 'sslh' | wc -l)" = '0' ]] && {
+		clear
+		banner_info "             SSLH KURULUMU               "
+		echo ""
+		echo ""
+		msg_warn "[!] VARSAYILAN OLARAK 443 PORTU KULLANILACAK"
+		echo ""
+		echo -ne "\033[1;32mSSLH'Yİ GERÇEKTEN KURMAK İSTİYOR MUSUNUZ \033[1;31m? \033[1;33m[e/h]:\033[1;37m "
+		read resp
+		[[ "$resp" =~ ^[eEyY]$ ]] && {
+			verif_ptrs 443
+
+			apt-get update -y >/dev/null 2>&1
+
+			fun_instsslh() {
+				[[ -e "/etc/stunnel/stunnel.conf" ]] && ptssl="$(netstat -nplt | grep 'stunnel' | awk {'print $4'} | cut -d: -f2 | xargs)" || ptssl='3128'
+				DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends install sslh
+				echo -e "#Stand-alone mode\n\nRUN=yes\n\nDAEMON=/usr/sbin/sslh\n\nDAEMON_OPTS='--user sslh --listen 0.0.0.0:443 --ssh 127.0.0.1:22 --tls 127.0.0.1:$ptssl --http 127.0.0.1:80 --pidfile /var/run/sslh/sslh.pid'" >/etc/default/sslh
+				mkdir -p /var/run/sslh
+				chown sslh:sslh /var/run/sslh
+				mkdir -p /etc/systemd/system/sslh.service.d
+				echo -e "[Service]\nRuntimeDirectory=sslh" >/etc/systemd/system/sslh.service.d/override.conf
+				systemctl daemon-reload
+				/etc/init.d/sslh start && service sslh start
+			}
+			echo -e "\n\033[1;32mSSLH KURULUYOR !\033[0m\n"
+			fun_bar 'fun_instsslh'
+			echo -e "\n\033[1;32mSSLH BAŞLATILIYOR !\033[0m\n"
+			fun_bar '/etc/init.d/sslh restart && service sslh restart'
+			if [[ $(netstat -nplt | grep -w 'sslh' | wc -l) != '0' ]]; then
+				echo ""
+				msg_ok "BAŞARIYLA KURULDU !"
+			else
+				echo ""
+				msg_err "BEKLENMEYEN HATA !"
+			fi
+			sleep 3
+			fun_connections
+		} || {
+			echo -e "\n\033[1;31mGeri dönülüyor.."
+			sleep 2
+			fun_connections
+		}
+	} || {
+		clear
+		banner_danger "             SSLH'Yİ KALDIR               "
+		echo ""
+		color_echo_n "SSLH'Yİ GERÇEKTEN KALDIRMAK İSTİYOR MUSUNUZ " "green"
+		color_echo_n "? " "red"
+		color_echo_n "[e/h]: " "yellow"
+		read respo
+		[[ "$respo" =~ ^[eEyY]$ ]] && {
+			fun_delsslh() {
+				/etc/init.d/sslh stop && service sslh stop
+				apt-get remove sslh -y
+				apt-get purge sslh -y
+				rm -rf /etc/systemd/system/sslh.service.d
+				systemctl daemon-reload
+			}
+			echo -e "\n\033[1;32mSSLH KALDIRILIYOR !\033[0m\n"
+			fun_bar 'fun_delsslh'
+			echo -e "\n\033[1;32mBAŞARIYLA KALDIRILDI !\033[0m\n"
+			sleep 2
+			fun_connections
+		} || {
+			echo -e "\n\033[1;31mGeri dönülüyor.."
+			sleep 2
+			fun_connections
+		}
+	}
+}
+

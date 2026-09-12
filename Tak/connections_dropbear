@@ -1,0 +1,162 @@
+#!/bin/bash
+
+fun_drop() {
+	if netstat -nltp | grep 'dropbear' 1>/dev/null 2>/dev/null; then
+		clear
+		[[ $(netstat -nltp | grep -c 'dropbear') != '0' ]] && dpbr=$(netstat -nplt | grep 'dropbear' | awk '{print $4}' | sed 's/.*://' | sort -u | xargs) || sqdp="\033[1;31mUNAVAILABLE"
+		if ps x | grep "limiter" | grep -v grep 1>/dev/null 2>/dev/null; then
+			stats='\033[1;32m◉ '
+		else
+			stats='\033[1;31m○ '
+		fi
+		banner_info "              DROPBEAR YÖNETİMİ               "
+		echo -e "\n\033[1;33mPORTLAR\033[1;37m: \033[1;32m$dpbr"
+		echo ""
+		menu_option "1" "DROPBEAR'I SINIRLA $stats" "red" "yellow"
+		menu_option "2" "DROPBEAR PORTUNU DEĞİŞTİR" "red" "yellow"
+		menu_option "3" "DROPBEAR'I KALDIR" "red" "yellow"
+		menu_option "0" "GERİ" "red" "yellow"
+		echo ""
+		color_echo_n "LÜTFEN SEÇENEKLERDEN BİRİNİ SEÇİN " "green"
+	color_echo_n "?" "yellow"
+	color_echo_n " " "white"
+		read resposta
+		if [[ "$resposta" = '1' ]]; then
+			clear
+			if ps x | grep "limiter" | grep -v grep 1>/dev/null 2>/dev/null; then
+				echo -e "\033[1;32mSınırlayıcı durduruluyor... \033[0m"
+				echo ""
+				fun_stplimiter() {
+					pidlimiter=$(ps x | grep "limiter" | awk -F "pts" {'print $1'})
+					kill -9 $pidlimiter
+					screen -wipe
+				}
+				fun_bar 'fun_stplimiter' 'sleep 2'
+				echo -e "\n\033[1;31m SINIRLAYICI KAPALI \033[0m"
+				sleep 3
+				fun_drop
+			else
+				echo -e "\n\033[1;32mSınırlayıcı başlatılıyor... \033[0m"
+				echo ""
+				fun_bar 'screen -d -m -t limiter droplimiter' 'sleep 3'
+				echo -e "\n\033[1;32m  SINIRLAYICI AÇIK \033[0m"
+				sleep 3
+				fun_drop
+			fi
+		elif [[ "$resposta" = '2' ]]; then
+			echo ""
+			color_echo_n "HANGİ PORTU KULLANMAK İSTİYORSUNUZ " "green"
+			color_echo_n "?" "yellow"
+			color_echo_n " " "white"
+			read pt
+			echo ""
+			verif_ptrs $pt
+			var1=$(grep 'DROPBEAR_PORT=' /etc/default/dropbear | cut -d'=' -f2)
+			echo -e "\033[1;32mDROPBEAR PORTU DEĞİŞTİRİLİYOR!"
+			sed -i "s/\b$var1\b/$pt/g" /etc/default/dropbear >/dev/null 2>&1
+			echo ""
+			fun_bar 'sleep 2'
+			echo -e "\n\033[1;32mDROPBEAR SIFIRLANIYOR!"
+			echo ""
+			fun_bar 'systemctl reset-failed dropbear' 'service dropbear restart'
+			echo ""
+			msg_ok "PORT BAŞARIYLA DEĞİŞTİRİLDİ!"
+			sleep 3
+			clear
+			fun_connections
+		elif [[ "$resposta" = '3' ]]; then
+			echo ""
+			color_echo "DROPBEAR KALDIRILIYOR !" "green"
+			echo ""
+			fun_dropunistall() {
+				service dropbear stop && /etc/init.d/dropbear stop
+				apt-get autoremove dropbear -y
+				apt-get remove dropbear-run -y
+				apt-get remove dropbear -y
+				apt-get purge dropbear -y
+				rm -rf /etc/default/dropbear
+			}
+			fun_bar 'fun_dropunistall'
+			echo ""
+			msg_ok "DROPBEAR BAŞARIYLA KALDIRILDI !"
+			sleep 3
+			clear
+			fun_connections
+		elif [[ "$resposta" = '0' ]]; then
+			echo ""
+			msg_err "Geri dönülüyor..."
+			sleep 2
+			fun_connections
+		else
+			echo ""
+			msg_err "Geçersiz seçenek..."
+			sleep 2
+			fun_connections
+		fi
+	else
+		clear
+		banner_info "           DROPBEAR KURULUMU              "
+		echo -e "\n\033[1;33mDROPBEAR'I KURMAK ÜZERESİNİZ !\033[0m\n"
+		color_echo_n "DEVAM ETMEK İSTİYOR MUSUNUZ " "green"
+		color_echo_n "? " "red"
+		color_echo_n "[e/h]: " "yellow"
+		read resposta
+		[[ "$resposta" =~ ^[eEyY]$ ]] && {
+			echo -e "\n\033[1;33mDROPBEAR İÇİN BİR PORT BELİRLEYİN !\033[0m\n"
+			echo -ne "\033[1;32mBİR PORT SEÇİN \033[1;33m?\033[1;37m "
+			read porta
+			[[ -z "$porta" ]] && {
+				echo ""
+			msg_err "Geçersiz port!"
+				sleep 3
+				clear
+				fun_connections
+			}
+			verif_ptrs $porta
+			echo ""
+			color_echo "DROPBEAR KURULUYOR !" "green"
+			echo ""
+			fun_instdrop() {
+				apt-get update -y
+				apt-get install dropbear -y
+			}
+			fun_bar 'fun_instdrop'
+			fun_ports() {
+    sed -i -E "s/^#?NO_START=.*/NO_START=0/" /etc/default/dropbear
+    sed -i -E "s/^#?DROPBEAR_PORT=.*/DROPBEAR_PORT=$porta/" /etc/default/dropbear
+    sed -i -E "s/^#?DROPBEAR_EXTRA_ARGS=.*/DROPBEAR_EXTRA_ARGS='-p $porta'/" /etc/default/dropbear
+    grep -q '^NO_START=' /etc/default/dropbear || echo 'NO_START=0' >>/etc/default/dropbear
+    grep -q '^DROPBEAR_PORT=' /etc/default/dropbear || echo "DROPBEAR_PORT=$porta" >>/etc/default/dropbear
+}
+			echo ""
+			color_echo "DROPBEAR PORTU YAPILANDIRILIYOR !" "green"
+			echo ""
+			fun_bar 'fun_ports'
+			grep -v "^PasswordAuthentication yes" /etc/ssh/sshd_config >/tmp/passlogin && mv /tmp/passlogin /etc/ssh/sshd_config
+			echo "PasswordAuthentication yes" >>/etc/ssh/sshd_config
+			grep -v "^PermitTunnel yes" /etc/ssh/sshd_config >/tmp/ssh && mv /tmp/ssh /etc/ssh/sshd_config
+			echo "PermitTunnel yes" >>/etc/ssh/sshd_config
+			echo ""
+			echo -e "\033[1;32mKURULUM TAMAMLANIYOR !\033[0m"
+			echo ""
+			fun_ondrop() {
+				systemctl reset-failed dropbear
+				service dropbear start
+				/etc/init.d/dropbear restart
+			}
+			fun_bar 'fun_ondrop' 'sleep 1'
+			echo -e "\n\033[1;32mKURULUM TAMAMLANDI \033[1;33mPORT: \033[1;37m$porta\033[0m"
+			[[ $(grep -c "/bin/false" /etc/shells) = '0' ]] && echo "/bin/false" >>/etc/shells
+			sleep 2
+			clear
+			fun_connections
+		} || {
+			echo""
+			echo -e "\033[1;31mGeri dönülüyor...\033[0m"
+			sleep 3
+			clear
+			fun_connections
+		}
+	fi
+}
+

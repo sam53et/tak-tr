@@ -1,0 +1,158 @@
+#!/bin/bash
+
+inst_ssl() {
+	if netstat -nltp | grep 'stunnel4' 1>/dev/null 2>/dev/null; then
+		[[ $(netstat -nltp | grep 'stunnel4' | wc -l) != '0' ]] && sslt=$(netstat -nplt | grep stunnel4 | awk {'print $4'} | awk -F ":" {'print $2'} | xargs) || sslt="\033[1;31mUNAVAILABLE"
+		banner_info "              SSL TÜNEL YÖNETİMİ               "
+		echo -e "\n\033[1;33mPORTLAR\033[1;37m: \033[1;32m$sslt"
+		echo ""
+		menu_option "1" "SSL TÜNEL PORTUNU DEĞİŞTİR" "red" "yellow"
+		menu_option "2" "SSL TÜNELİ KALDIR" "red" "yellow"
+		menu_option "0" "GERİ" "red" "yellow"
+		echo ""
+		color_echo_n "LÜTFEN SEÇENEKLERDEN BİRİNİ SEÇİN " "green"
+	color_echo_n "?" "yellow"
+	color_echo_n " " "white"
+		read resposta
+		echo ""
+		[[ "$resposta" = '1' ]] && {
+			color_echo_n "HANGİ PORTU KULLANMAK İSTİYORSUNUZ " "green"
+			color_echo_n "?" "yellow"
+			color_echo_n " " "white"
+			read porta
+			echo ""
+			[[ -z "$porta" ]] && {
+				echo ""
+				msg_err "Geçersiz port!"
+				sleep 2
+				clear
+				fun_connections
+			}
+			verif_ptrs $porta
+			echo -e "\033[1;32mSSL TÜNEL PORTU DEĞİŞTİRİLİYOR!"
+			var2=$(grep 'accept' /etc/stunnel/stunnel.conf | awk '{print $NF}')
+			sed -i "s/\b$var2\b/$porta/g" /etc/stunnel/stunnel.conf >/dev/null 2>&1
+			echo ""
+			fun_bar 'sleep 2'
+			echo ""
+			color_echo "SSL TÜNEL YENİDEN BAŞLATILIYOR!" "green"
+			echo ""
+			fun_bar 'service stunnel4 restart' '/etc/init.d/stunnel4 restart'
+			echo ""
+			if netstat -nltp | grep 'stunnel4' >/dev/null; then
+				msg_ok "PORT BAŞARIYLA DEĞİŞTİRİLDİ !"
+			else
+				msg_err "BEKLENMEYEN HATA!"
+			fi
+			sleep 3.5s
+			clear
+			fun_connections
+		}
+		[[ "$resposta" = '2' ]] && {
+			color_echo "SSL TÜNEL KALDIRILIYOR !" "green"
+			del_ssl() {
+				service stunnel4 stop
+				systemctl disable stunnel4
+				pkill -9 -f stunnel4 2>/dev/null
+				apt-get remove stunnel4 -y
+				apt-get autoremove stunnel4 -y
+				apt-get purge stunnel4 -y
+				rm -rf /etc/stunnel
+				rm -rf /etc/default/stunnel4
+				rm -f /etc/init.d/stunnel4
+				rm -rf /var/log/stunnel4
+				systemctl daemon-reload
+				systemctl reset-failed stunnel4 2>/dev/null
+			}
+			echo ""
+			fun_bar 'del_ssl'
+			echo ""
+			msg_ok "SSL TÜNEL BAŞARIYLA KALDIRILDI !"
+			sleep 3
+			fun_connections
+		} || {
+			echo -e "\033[1;31mGeri dönülüyor...\033[0m"
+			sleep 3
+			fun_connections
+		}
+	else
+		clear
+		banner_info "           SSL TÜNEL KURULUMU             "
+		echo -e "\n\033[1;33mSSL TÜNELİ KURMAK ÜZERESİNİZ !\033[0m"
+		echo ""
+		color_echo_n "DEVAM ETMEK İSTİYOR MUSUNUZ " "green"
+		color_echo_n "? " "red"
+		color_echo_n "[e/h]: " "yellow"
+		read resposta
+		[[ "$resposta" =~ ^[eEyY]$ ]] && {
+			echo -e "\n\033[1;33mSSL TÜNEL İÇİN BİR PORT BELİRLEYİN !\033[0m"
+			echo ""
+			read -p "$(echo -e "\033[1;32mHANGİ PORTU KULLANMAK İSTİYORSUNUZ? \033[1;37m")" -e -i 3128 porta
+			[[ -z "$porta" ]] && {
+				echo ""
+				msg_err "Geçersiz port!"
+				sleep 3
+				clear
+				fun_connections
+			}
+			verif_ptrs $porta
+			echo ""
+			color_echo "SSL TÜNEL KURULUYOR !" "green"
+			echo ""
+			fun_bar 'apt-get update -y' 'apt-get install stunnel4 -y'
+			echo ""
+			color_echo "SSL TÜNEL YAPILANDIRILIYOR !" "green"
+			echo ""
+			ssl_conf() {
+				echo -e "cert = /etc/stunnel/stunnel.pem\nclient = no\nsocket = a:SO_REUSEADDR=1\nsocket = l:TCP_NODELAY=1\nsocket = r:TCP_NODELAY=1\n\n[stunnel]\nconnect = 127.0.0.1:22\naccept = ${porta}" >/etc/stunnel/stunnel.conf
+			}
+			fun_bar 'ssl_conf'
+			echo -e "\n\033[1;32mSERTİFİKA OLUŞTURULUYOR !\033[0m"
+			echo ""
+			ssl_certif() {
+				sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4
+				cd /etc/stunnel
+				if [[ ! -f stunnel.pem ]]; then
+					openssl genrsa -out key.pem 2048 >/dev/null 2>&1
+					(
+					echo "BR"
+					echo "State"
+					echo "City"
+					echo "Organization"
+					echo "Organizational Unit"
+					echo "Common Name"
+					echo "Email"
+					) | openssl req -new -x509 -key key.pem -out cert.pem -days 1050 >/dev/null 2>&1
+					cat cert.pem key.pem > stunnel.pem
+					rm -f key.pem cert.pem >/dev/null 2>&1
+					chmod 600 stunnel.pem
+				fi
+				cd $HOME
+			}
+			fun_bar 'ssl_certif'
+			echo -e "\n\033[1;32mSSL TÜNEL BAŞLATILIYOR !\033[0m"
+			echo ""
+			fun_finssl() {
+				service stunnel4 restart
+				service ssh restart
+				/etc/init.d/stunnel4 restart
+				systemctl enable stunnel4
+			}
+			fun_bar 'fun_finssl' 'service stunnel4 restart'
+			echo ""
+			color_echo_n "SSL TÜNEL BAŞARIYLA KURULDU !" "green"
+			color_echo_n " PORT: " "red"
+			color_echo "$porta" "yellow"
+			sleep 3
+			clear
+			fun_connections
+		} || {
+			echo ""
+			msg_err "Geri dönülüyor..."
+			sleep 2
+			clear
+			fun_connections
+		}
+	fi
+}
+
